@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Azure DevOps Capacity & Work Dashboard</title>
+
+  <!-- PWA Manifest -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0284c7">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Azure Dashboard">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+
+  <!-- Main Stylesheet -->
+  <link rel="stylesheet" href="styles.css">
+
+  <!-- SweetAlert2 CSS & JS -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+  <div class="container">
+
+    <!-- ========================================== -->
+    <!-- 1. LOGIN SECTION                           -->
+    <!-- ========================================== -->
+    <div id="loginSection" class="login-card">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <h2>Azure DevOps Dashboard</h2>
+        <button type="button" id="loginThemeBtn" class="btn btn-secondary" onclick="toggleTheme()">☀️</button>
+      </div>
+
+      <div class="form-group">
+        <label for="orgName">Organization Name</label>
+        <input type="text" id="orgName" placeholder="e.g., my-company-org">
+      </div>
+
+      <div class="form-group">
+        <label for="userEmail">User Email</label>
+        <input type="email" id="userEmail" placeholder="user@domain.com">
+      </div>
+
+      <div class="form-group">
+        <label for="patToken">Personal Access Token (PAT)</label>
+        <input type="password" id="patToken" placeholder="Enter PAT Token">
+      </div>
+
+      <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+        <input type="checkbox" id="rememberMe" style="width: auto;" checked>
+        <label for="rememberMe" style="margin: 0; cursor: pointer;">Remember credentials on this browser</label>
+      </div>
+
+      <button class="btn" style="width: 100%; margin-top: 10px;" onclick="handleLogin()">Connect & Load Dashboard</button>
+    </div>
+
+
+    <!-- ========================================== -->
+    <!-- 2. MAIN DASHBOARD SECTION                  -->
+    <!-- ========================================== -->
+    <div id="dashboardSection" style="display: none;">
+
+      <!-- HEADER BAR -->
+      <div class="header-bar">
+        <div class="profile-info">
+          <div class="avatar" id="profileAvatar">AZ</div>
+          <div>
+            <h3 id="profileName" style="font-size: 18px; margin-bottom: 2px;">User Name</h3>
+            <span id="profileEmail" style="font-size: 13px; color: var(--text-muted);">email@domain.com</span>
+            <span style="margin: 0 6px; color: var(--text-muted);">•</span>
+            <span id="profileOrg" style="font-size: 13px; color: var(--accent-color); font-weight: bold;">Organization</span>
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+          <button type="button" id="installBtn" class="btn btn-secondary" onclick="installPwa()" style="display: none;" title="Install as app">📱 Install App</button>
+          <button type="button" class="btn btn-secondary" onclick="refreshDashboard()" title="Refresh data (press R)">🔄 Refresh</button>
+          <button type="button" class="btn btn-secondary" onclick="exportCurrentViewCsv()" title="Export current view to CSV">📥 CSV</button>
+          <button type="button" class="btn btn-secondary" onclick="exportCurrentViewJson()" title="Export current view to JSON">📥 JSON</button>
+          <button type="button" class="btn btn-secondary" onclick="openSettings()" title="Settings">⚙️</button>
+          <button type="button" id="dashThemeBtn" class="btn btn-secondary" onclick="toggleTheme()" title="Toggle Light/Dark Theme">☀️</button>
+          <button type="button" class="btn btn-secondary" onclick="logout()" style="border-color: #ef4444; color: #ef4444;">Logout</button>
+        </div>
+      </div>
+
+      <span id="userDisplay" style="display: none;"></span>
+
+      <!-- 4x4 GRID CARDS & RIGHT-SIDE PROFILE LAYOUT -->
+      <div class="dashboard-grid-layout">
+
+        <div class="cards-4x4-container">
+
+          <div class="stat-card">
+            <h4>01. Today Active</h4>
+            <div class="value" id="cardTodayActive">0</div>
+            <div class="sub-value">Tasks in progress</div>
+          </div>
+
+          <div class="stat-card">
+            <h4>02. Today Hours</h4>
+            <div class="value highlight-rose" id="cardTodayHours">0.0 hrs</div>
+            <div class="sub-value">Logged today</div>
+          </div>
+
+          <div class="stat-card">
+            <h4>03. Today Completed</h4>
+            <div class="value highlight-green" id="cardTodayCompleted">0</div>
+            <div class="sub-value">Done today</div>
+          </div>
+
+          <div class="stat-card">
+            <h4>04. Daily Target</h4>
+            <div class="value" id="cardTodayTarget">6.0 hrs</div>
+            <div class="sub-value">Standard goal</div>
+          </div>
+
+          <div class="stat-card">
+            <h4>05. Week Logged</h4>
+            <div class="value" id="cardWeekHours">0.0 hrs</div>
+            <div class="sub-value">Cumulative logged</div>
+          </div>
+
+          <div class="stat-card">
+            <h4>06. Week Target</h4>
+            <div class="value" id="cardWeekCapacitySub">0 / 30 hrs</div>
+            <div class="sub-value">Weekly Goal</div>
+          </div>
+
+          <div class="stat-card">
+            <h4>07. Week Capacity</h4>
+            <div class="value highlight-blue" id="cardWeekCapacity">0%</div>
+            <div class="sub-value">Target achieved</div>
+          </div>
+
+          <div class="stat-card">
+            <h4>08. Week Remaining</h4>
+            <div class="value highlight-yellow" id="cardWeekRemaining">0.0 hrs</div>
+            <div class="sub-value">Estimated remaining</div>
+          </div>
+
+          <div class="stat-card">
+            <h4>09. Month Logged</h4>
+            <div class="value" id="cardMonthLogged">0.0 hrs</div>
+            <div class="sub-value">Total logged</div>
+          </div>
+
+          <div class="stat-card">
+            <h4>10. Month Pending</h4>
+            <div class="value highlight-yellow" id="cardMonthPendingHours">0.0 hrs</div>
+            <div class="sub-value">Pending workload</div>
+          </div>
+
+          <div class="stat-card">
+            <h4>11. Month Active</h4>
+            <div class="value" id="cardMonthActive">0</div>
+            <div class="sub-value">Active items</div>
+          </div>
+
+          <div class="stat-card">
+            <h4>12. Month Closed</h4>
+            <div class="value highlight-green" id="cardMonthClosed">0</div>
+            <div class="sub-value">Resolved / Closed</div>
+          </div>
+
+          <div class="stat-card">
+            <h4>13. Week Active Items</h4>
+            <div class="value" id="cardWeekItems">0</div>
+            <div class="sub-value">In current week</div>
+          </div>
+
+          <div class="stat-card">
+            <h4>14. Projects Scope</h4>
+            <div class="value" id="cardTotalProjects">0</div>
+            <div class="sub-value">Active Projects</div>
+          </div>
+
+          <div class="stat-card">
+            <h4>15. Teams Scope</h4>
+            <div class="value" id="cardTotalTeams">0</div>
+            <div class="sub-value">Active Teams</div>
+          </div>
+
+          <div class="stat-card">
+            <h4>16. Avg Daily Hours</h4>
+            <div class="value highlight-rose" id="cardAvgDailyHours">0.0 hrs</div>
+            <div class="sub-value">Daily average</div>
+          </div>
+
+        </div>
+
+        <aside class="profile-side-panel">
+          <div class="profile-card">
+            <div class="profile-avatar-large" id="sideProfileAvatar">AZ</div>
+            <h3 id="sideProfileName">User Name</h3>
+            <p id="sideProfileEmail" class="profile-email">email@domain.com</p>
+            <span id="sideProfileOrg" class="org-badge">Organization</span>
+
+            <hr class="profile-divider">
+
+            <div class="profile-metrics-list">
+              <div class="metric-row">
+                <span>Total Tasks Assigned</span>
+                <strong id="profileTotalTasks">0</strong>
+              </div>
+              <div class="metric-row">
+                <span>Active Tasks</span>
+                <strong id="profileActiveTasks" class="highlight-yellow">0</strong>
+              </div>
+              <div class="metric-row">
+                <span>Closed Tasks</span>
+                <strong id="profileClosedTasks" class="highlight-green">0</strong>
+              </div>
+              <div class="metric-row">
+                <span>Total Work Completed</span>
+                <strong id="profileTotalHours">0.0 hrs</strong>
+              </div>
+            </div>
+
+            <hr class="profile-divider">
+
+            <div class="profile-metrics-list">
+              <div class="metric-row">
+                <span>🎯 Productivity Score</span>
+                <strong id="profileScore" class="highlight-blue">0</strong>
+              </div>
+              <div class="metric-row">
+                <span>🔥 Current Streak</span>
+                <strong id="profileStreak" class="highlight-rose">0 days</strong>
+              </div>
+              <div class="metric-row">
+                <span>🏆 Best Streak</span>
+                <strong id="profileBestStreak">0 days</strong>
+              </div>
+            </div>
+          </div>
+        </aside>
+
+      </div>
+
+      <div id="sprintSummary" class="sprint-summary" style="display:none;">
+        <div class="sprint-header">
+          <div>
+            <div class="sprint-eyebrow">Current Sprint</div>
+            <h3 id="sprintName">—</h3>
+            <div class="sprint-dates" id="sprintDates">—</div>
+          </div>
+          <div class="sprint-countdown">
+            <div class="sprint-countdown-value" id="sprintDays">—</div>
+            <div class="sprint-countdown-label">days left</div>
+          </div>
+        </div>
+        <div class="sprint-progress-wrap">
+          <div class="sprint-progress-bar">
+            <div class="sprint-progress-fill" id="sprintProgressFill" style="width:0%"></div>
+          </div>
+          <div class="sprint-progress-meta">
+            <span id="sprintProgressText">0 / 0 items closed</span>
+            <span id="sprintProgressPct">0%</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="analytics-panel">
+        <div class="analytics-card">
+          <h4>📊 Hours Logged — Last 7 Days</h4>
+          <div class="chart-wrapper">
+            <canvas id="hoursChart"></canvas>
+          </div>
+        </div>
+        <div class="analytics-card">
+          <h4>🍩 Work Distribution</h4>
+          <div class="chart-wrapper">
+            <canvas id="stateChart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <div class="tabs-container" role="tablist" aria-label="Dashboard views">
+        <button class="tab-btn active" id="tabToday" role="tab" aria-selected="true" onclick="switchTab('TODAY')" title="Shortcut: 1">Today Work</button>
+        <button class="tab-btn" id="tabWeek" role="tab" aria-selected="false" onclick="switchTab('WEEK')" title="Shortcut: 2">This Week</button>
+        <button class="tab-btn" id="tabMonth" role="tab" aria-selected="false" onclick="switchTab('MONTH')" title="Shortcut: 3">This Month</button>
+        <button class="tab-btn" id="tabBacklog" role="tab" aria-selected="false" onclick="switchTab('BACKLOG')" title="Shortcut: 4">Team Backlog</button>
+        <button class="tab-btn" id="tabAll" role="tab" aria-selected="false" onclick="switchTab('ALL')" title="Shortcut: 5">All Assigned</button>
+      </div>
+
+      <div class="shortcut-hint" aria-hidden="true">
+        💡 Press <kbd>1</kbd>–<kbd>5</kbd> to switch views &nbsp;·&nbsp; <kbd>/</kbd> to search &nbsp;·&nbsp; <kbd>R</kbd> to refresh &nbsp;·&nbsp; <kbd>Esc</kbd> to clear
+      </div>
+
+      <div class="filter-bar">
+        <div class="filter-group">
+          <label for="projectFilter">Project Filter</label>
+          <select id="projectFilter" onchange="handleProjectChange()">
+            <option value="ALL">All Projects</option>
+          </select>
+        </div>
+
+        <div class="filter-group">
+          <label for="teamFilter">Team Filter</label>
+          <select id="teamFilter" onchange="applyFilters()">
+            <option value="ALL">All Teams</option>
+          </select>
+        </div>
+
+        <div class="filter-group">
+          <label for="typeFilter">Work Item Type</label>
+          <select id="typeFilter" onchange="applyFilters()">
+            <option value="ALL">All Types</option>
+            <optgroup label="Specific Types" id="dynamicTypeOptions">
+            </optgroup>
+          </select>
+        </div>
+
+        <div class="filter-group">
+          <label for="stateFilter">State / Status Filter</label>
+          <select id="stateFilter" onchange="applyFilters()">
+            <option value="ALL">All States</option>
+            <optgroup label="Quick Filters">
+              <option value="NEW">New / Not Started</option>
+              <option value="ACTIVE">Active / Open</option>
+              <option value="CLOSED">Completed / Closed</option>
+            </optgroup>
+            <optgroup label="Specific Statuses" id="dynamicStateOptions">
+            </optgroup>
+          </select>
+        </div>
+
+        <div class="filter-group">
+          <label for="searchInput">Keyword Search</label>
+          <input type="text" id="searchInput" onkeyup="applyFilters()" placeholder="Search title or ID...">
+        </div>
+
+        <div class="filter-group" style="max-width: 120px;">
+          <label for="rowsPerPage">Rows Per Page</label>
+          <select id="rowsPerPage" onchange="handleRowsPerPageChange()">
+            <option value="10">10</option>
+            <option value="20">20</option>
+            <option value="30" selected>30</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="table-responsive">
+        <table class="task-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Project</th>
+              <th>Team</th>
+              <th>Type</th>
+              <th>Title</th>
+              <th>Today Logged</th>
+              <th>Total Completed</th>
+              <th>Remaining</th>
+              <th>State</th>
+              <th>Last Changed</th>
+            </tr>
+          </thead>
+          <tbody id="taskTableBody">
+          </tbody>
+        </table>
+      </div>
+
+      <div class="pagination-container">
+        <div id="pageInfo">Showing 0-0 of 0 items</div>
+        <div class="pagination-buttons">
+          <button id="prevPageBtn" onclick="changePage(-1)">&laquo; Previous</button>
+          <span id="pageIndicator" style="align-self: center; font-weight: bold; margin: 0 8px;">Page 1 of 1</span>
+          <button id="nextPageBtn" onclick="changePage(1)">Next &raquo;</button>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+  <!-- POMODORO WIDGET -->
+  <div id="pomodoroWidget" class="pomodoro-widget" style="display: none;">
+    <div class="pomodoro-header">
+      <span id="pomodoroMode">Ready</span>
+      <span id="pomodoroCount" class="pomodoro-count">0 today</span>
+    </div>
+    <div id="pomodoroDisplay" class="pomodoro-display">25:00</div>
+    <div class="pomodoro-actions">
+      <button type="button" onclick="pomodoroStart()" title="Start">▶</button>
+      <button type="button" onclick="pomodoroPause()" title="Pause">⏸</button>
+      <button type="button" onclick="pomodoroReset()" title="Reset">↺</button>
+    </div>
+  </div>
+
+  <!-- WORK ITEM DETAILS DRAWER -->
+  <aside id="detailsDrawer" class="details-drawer" aria-hidden="true" role="dialog" aria-labelledby="drawerTitle"></aside>
+
+  <!-- SETTINGS MODAL -->
+  <div id="settingsModal" class="modal-overlay" aria-hidden="true" role="dialog" aria-labelledby="settingsTitle">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="settingsTitle">⚙️ Settings</h3>
+        <button type="button" class="modal-close" onclick="closeSettings()" aria-label="Close">×</button>
+      </div>
+
+      <div class="modal-body">
+        <h4 class="settings-section">Capacity Targets</h4>
+
+        <div class="settings-row">
+          <label for="settingDaily">Daily Target (hours)</label>
+          <input type="number" id="settingDaily" min="1" max="16" step="0.5" value="6">
+        </div>
+
+        <div class="settings-row">
+          <label for="settingWeekly">Weekly Capacity (hours)</label>
+          <input type="number" id="settingWeekly" min="1" max="80" step="1" value="30">
+        </div>
+
+        <div class="settings-row">
+          <label for="settingRows">Default Rows Per Page</label>
+          <select id="settingRows">
+            <option value="10">10</option>
+            <option value="20">20</option>
+            <option value="30">30</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+        </div>
+
+        <h4 class="settings-section">Notifications</h4>
+
+        <div class="settings-row settings-row-check">
+          <input type="checkbox" id="settingNotifications">
+          <label for="settingNotifications">Enable browser notifications</label>
+        </div>
+
+        <div class="settings-row settings-row-check">
+          <input type="checkbox" id="settingDailyReminder">
+          <label for="settingDailyReminder">Daily goal reminder (morning)</label>
+        </div>
+
+        <div class="settings-row settings-row-check">
+          <input type="checkbox" id="settingEodSummary">
+          <label for="settingEodSummary">End-of-day summary (after 5 PM)</label>
+        </div>
+
+        <div class="settings-hint" id="notifPermissionStatus"></div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="resetSettingsFromForm()">Reset Defaults</button>
+        <div style="flex:1"></div>
+        <button type="button" class="btn btn-secondary" onclick="closeSettings()">Cancel</button>
+        <button type="button" class="btn" onclick="saveSettingsFromForm()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- UPDATE TASK MODAL -->
+  <div id="updateTaskModal" class="modal-overlay" aria-hidden="true" role="dialog" aria-labelledby="updateTaskTitle">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="updateTaskTitle">✏️ Update Task</h3>
+        <button type="button" class="modal-close" onclick="closeUpdateTaskModal()" aria-label="Close">×</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="settings-row">
+          <label for="updateState">State</label>
+          <select id="updateState" style="width:180px;">
+            <option value="">— unchanged —</option>
+            <option value="New">New</option>
+            <option value="Active">Active</option>
+            <option value="Resolved">Resolved</option>
+            <option value="Closed">Closed</option>
+          </select>
+        </div>
+
+        <div class="settings-row">
+          <label for="updateCompleted">Completed Work (hrs)</label>
+          <input type="number" id="updateCompleted" min="0" max="1000" step="0.25" placeholder="—" style="width:180px;padding:6px 10px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-input);color:var(--text-main);font-size:13px;">
+        </div>
+
+        <div class="form-group" style="margin-top:14px;">
+          <label for="updateComment">Add Comment</label>
+          <textarea id="updateComment" rows="3" maxlength="500" placeholder="Optional note..." style="width:100%;padding:10px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-input);color:var(--text-main);font-family:inherit;font-size:14px;resize:vertical;"></textarea>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <div style="flex:1"></div>
+        <button type="button" class="btn btn-secondary" onclick="closeUpdateTaskModal()">Cancel</button>
+        <button type="button" class="btn" onclick="submitUpdateTask()">Update</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Application JavaScript (ES Module) -->
+  <script type="module" src="app.js"></script>
+</body>
+</html>

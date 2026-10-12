@@ -1,0 +1,21 @@
+# OS files
+Thumbs.db
+.DS_Store
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+
+# Local logs and debug files
+*.log
+server.log
+deepseek_text_*.txt
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Environment variables (if you add any later)
+.env
+.env.local
