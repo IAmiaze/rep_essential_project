@@ -1,6 +1,3 @@
-// Central configuration — single source of truth for tunables.
-// Some values are overridable via Settings (persisted in localStorage).
-
 const LS_SETTINGS = 'app_settings';
 
 const DEFAULT_SETTINGS = {
@@ -10,6 +7,9 @@ const DEFAULT_SETTINGS = {
   notificationsEnabled: false,
   dailyGoalReminder: true,
   eodSummary: true,
+  dateRangeMode: 'current_month',
+  useTargetDateForAttribution: true,
+  topTab: 'overview',   // 'overview' | 'tasks' | 'analytics'
 };
 
 function loadSettings() {
@@ -39,19 +39,17 @@ export function resetSettings() {
   return { ...DEFAULT_SETTINGS };
 }
 
-// CONFIG is mutable at runtime via settings
 export const CONFIG = {
   API_VERSION: '7.1-preview.3',
   WIQL_API_VERSION: '7.1-preview.2',
-
   WIQL_PAGE_SIZE: 200,
   WORKITEMS_BATCH_SIZE: 200,
   REVISION_CONCURRENCY: 5,
 
-  // Mutable via settings
   WEEKLY_CAPACITY_HOURS: DEFAULT_SETTINGS.weeklyCapacityHours,
   DAILY_TARGET_HOURS: DEFAULT_SETTINGS.dailyTargetHours,
   DEFAULT_ROWS_PER_PAGE: DEFAULT_SETTINGS.defaultRowsPerPage,
+  USE_TARGET_DATE_FOR_ATTRIBUTION: DEFAULT_SETTINGS.useTargetDateForAttribution,
 
   MAX_RETRIES: 3,
   RETRY_BASE_MS: 400,
@@ -73,7 +71,7 @@ export function applySettingsToConfig() {
   CONFIG.WEEKLY_CAPACITY_HOURS = s.weeklyCapacityHours;
   CONFIG.DAILY_TARGET_HOURS = s.dailyTargetHours;
   CONFIG.DEFAULT_ROWS_PER_PAGE = s.defaultRowsPerPage;
+  CONFIG.USE_TARGET_DATE_FOR_ATTRIBUTION = s.useTargetDateForAttribution;
 }
 
-// Apply on module load
 applySettingsToConfig();

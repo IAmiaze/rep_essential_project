@@ -1,12 +1,10 @@
 import { CONFIG } from './config.js';
-import { wiqlEscape, sleep } from './utils.js';
+import { wiqlEscape, sleep, getLocalDateString } from './utils.js';
 
-/* ---------- Auth header ---------- */
 export function buildAuthHeader(pat) {
   return 'Basic ' + btoa(':' + pat);
 }
 
-/* ---------- Low-level fetch with retry + abort ---------- */
 async function fetchJson(url, { method = 'GET', headers = {}, body, signal } = {}) {
   let lastErr;
   for (let attempt = 0; attempt < CONFIG.MAX_RETRIES; attempt++) {
@@ -30,7 +28,6 @@ async function fetchJson(url, { method = 'GET', headers = {}, body, signal } = {
   throw lastErr;
 }
 
-/* ---------- WIQL ---------- */
 export async function runWiql(org, pat, query, signal) {
   const url = `https://dev.azure.com/${org}/_apis/wit/wiql?api-version=${CONFIG.WIQL_API_VERSION}`;
   const data = await fetchJson(url, {
@@ -42,7 +39,6 @@ export async function runWiql(org, pat, query, signal) {
   return (data.workItems || []).map(w => w.id);
 }
 
-/* ---------- Work items (batched, no 100-item cap) ---------- */
 export async function getWorkItems(org, pat, ids, signal) {
   if (!ids.length) return [];
   const out = [];
@@ -51,7 +47,7 @@ export async function getWorkItems(org, pat, ids, signal) {
     batches.push(ids.slice(i, i + CONFIG.WORKITEMS_BATCH_SIZE));
   }
   for (const batch of batches) {
-    const url = `https://dev.azure.com/${org}/_apis/wit/workitems?ids=${batch.join(',')}&$expand=none&api-version=${CONFIG.API_VERSION}`;
+    const url = `https://dev.azure.com/${org}/_apis/wit/workitems?ids=${batch.join(',')}&$expand=all&api-version=${CONFIG.API_VERSION}`;
     const data = await fetchJson(url, {
       headers: { Authorization: buildAuthHeader(pat) },
       signal,
@@ -61,7 +57,6 @@ export async function getWorkItems(org, pat, ids, signal) {
   return out;
 }
 
-/* ---------- Revisions (single work item) ---------- */
 export async function getRevisions(org, pat, workItemId, signal) {
   const url = `https://dev.azure.com/${org}/_apis/wit/workitems/${workItemId}/revisions?api-version=${CONFIG.API_VERSION}`;
   const data = await fetchJson(url, {
@@ -71,23 +66,87 @@ export async function getRevisions(org, pat, workItemId, signal) {
   return data.value || [];
 }
 
-/* ---------- Revision-diff: hours logged today ---------- */
-export function computeHoursAddedToday(revisions, todayStr) {
-  let hours = 0;
-  for (let i = 0; i < revisions.length; i++) {
+/* ---------- Smart Attribution ---------- */
+
+function isBacklogOrPlaceholder(iterationPath) {
+  if (!iterationPath) return false;
+  const lower = iterationPath.toLowerCase();
+  return (
+    lower.includes('backlog') ||
+    lower.includes('unplanned') ||
+    lower.includes('placeholder') ||
+    lower.includes('unscheduled')
+  );
+}
+
+export function getAttributionDate(fields, revisions, fallback) {
+  const target = fields['Microsoft.VSTS.Scheduling.TargetDate'];
+  if (target) return getLocalDateString(new Date(target));
+
+  const finish = fields['Microsoft.VSTS.Scheduling.FinishDate'];
+  if (finish) return getLocalDateString(new Date(finish));
+
+  const created = fields['System.CreatedDate'];
+  const changed = fields['System.ChangedDate'];
+  const iteration = fields['System.IterationPath'] || '';
+
+  // Backlog/placeholder sprint → always use CreatedDate
+  if (isBacklogOrPlaceholder(iteration) && created) {
+    return getLocalDateString(new Date(created));
+  }
+
+  // Old task updated recently (> 60 days)
+  if (created && changed) {
+    const createdMs = new Date(created).getTime();
+    const changedMs = new Date(changed).getTime();
+    const daysDiff = (changedMs - createdMs) / (1000 * 60 * 60 * 24);
+    if (daysDiff > 60) {
+      return getLocalDateString(new Date(created));
+    }
+  }
+
+  // Last revision where CompletedWork increased
+  if (revisions && revisions.length) {
+    for (let i = revisions.length - 1; i >= 0; i--) {
+      const f = revisions[i].fields;
+      if (!f) continue;
+      const cur = parseFloat(f['Microsoft.VSTS.Scheduling.CompletedWork'] || 0);
+      const prev = i > 0 && revisions[i - 1].fields
+        ? parseFloat(revisions[i - 1].fields['Microsoft.VSTS.Scheduling.CompletedWork'] || 0)
+        : 0;
+      if (cur - prev > 0) {
+        return f['System.ChangedDate']
+          ? getLocalDateString(new Date(f['System.ChangedDate']))
+          : fallback;
+      }
+    }
+  }
+
+  if (changed) return getLocalDateString(new Date(changed));
+  return fallback;
+}
+
+export function computeAttributedHours(attributionDate, totalCompleted, dateStr) {
+  if (!attributionDate || attributionDate !== dateStr) return 0;
+  return parseFloat(totalCompleted || 0);
+}
+
+export function computeHoursAddedOn() { return 0; }
+export function computeHoursAddedToday() { return 0; }
+
+export function computeLastLogDate(revisions, fallbackDate) {
+  for (let i = revisions.length - 1; i >= 0; i--) {
     const f = revisions[i].fields;
     if (!f) continue;
-    const revDate = f['System.ChangedDate']
-      ? new Date(f['System.ChangedDate']).toISOString().slice(0, 10)
-      : '';
-    if (revDate !== todayStr) continue;
-
     const cur = parseFloat(f['Microsoft.VSTS.Scheduling.CompletedWork'] || 0);
     const prev = i > 0 && revisions[i - 1].fields
       ? parseFloat(revisions[i - 1].fields['Microsoft.VSTS.Scheduling.CompletedWork'] || 0)
       : 0;
-    const diff = cur - prev;
-    if (diff > 0) hours += diff;
+    if (cur - prev > 0) {
+      return f['System.ChangedDate']
+        ? new Date(f['System.ChangedDate']).toISOString().slice(0, 10)
+        : fallbackDate;
+    }
   }
-  return hours;
+  return fallbackDate;
 }

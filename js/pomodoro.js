@@ -78,6 +78,10 @@ function playBeep() {
     gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.2);
     osc.start();
     osc.stop(ctx.currentTime + 1.2);
+    // Ensure clean shutdown to avoid "play() interrupted" warnings
+    setTimeout(() => {
+      try { ctx.close(); } catch (_) { /* ignore */ }
+    }, 1500);
   } catch (_) { /* audio unsupported — silent */ }
 }
 

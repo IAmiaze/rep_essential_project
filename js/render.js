@@ -100,7 +100,7 @@ export function buildTaskRow(task) {
     <td>${task.totalCompleted > 0 ? task.totalCompleted + ' hrs' : '-'}</td>
     <td style="color: ${task.remainingHrs > 0 ? '#eab308' : 'inherit'}; font-weight: ${task.remainingHrs > 0 ? 'bold' : 'normal'};">${task.remainingHrs > 0 ? task.remainingHrs + ' hrs' : '-'}</td>
     <td><span class="badge ${badgeClass}">${escapeHtml(task.state)}</span></td>
-    <td>${escapeHtml(task.changedDate)}</td>
+    <td>${escapeHtml(task.attributionDate || task.changedDate)}</td>
   `;
 
   return tr;

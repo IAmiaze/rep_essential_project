@@ -1,8 +1,8 @@
 import { buildAuthHeader } from './api.js';
 import { CONFIG } from './config.js';
-import { escapeHtml, isClosedState } from './utils.js';
+import { escapeHtml, isClosedState, getLocalDateString } from './utils.js';
+import { getLogDate, setLogDate } from './logdates.js';
 
-/* ---------- Fetch full work item ---------- */
 export async function fetchWorkItemDetails(org, pat, id, signal) {
   const url = `https://dev.azure.com/${org}/_apis/wit/workitems/${id}?$expand=all&api-version=${CONFIG.API_VERSION}`;
   const res = await fetch(url, {
@@ -13,10 +13,8 @@ export async function fetchWorkItemDetails(org, pat, id, signal) {
   return res.json();
 }
 
-/* ---------- Track current item for edit ---------- */
 let currentItem = null;
 
-/* ---------- Render drawer (view mode) ---------- */
 export function renderDetailsDrawer(item, org) {
   const drawer = document.getElementById('detailsDrawer');
   if (!drawer) return;
@@ -52,6 +50,7 @@ export function renderDetailsDrawer(item, org) {
     : (closed ? 100 : 0);
 
   const workItemUrl = `https://dev.azure.com/${org}/${encodeURIComponent(project)}/_workitems/edit/${item.id}`;
+  const currentLogDate = getLogDate(item.id) || '';
 
   drawer.innerHTML = `
     <div class="drawer-header">
@@ -67,8 +66,14 @@ export function renderDetailsDrawer(item, org) {
 
     <div class="drawer-body">
 
-      <!-- EDIT FORM (hidden by default) -->
       <div id="drawerEditForm" class="drawer-edit-form" style="display:none;">
+
+        <div class="edit-row edit-row-logdate">
+          <label for="drawerEditLogDate">📅 Log Date <span style="color:#94a3b8;font-size:11px;font-weight:400;">(which day do these hours belong to?)</span></label>
+          <input type="date" id="drawerEditLogDate" value="${currentLogDate || getLocalDateString()}">
+          <div class="edit-hint-inline">Change this if you're logging hours for a previous date. It overrides the automatic date detection.</div>
+        </div>
+
         <div class="edit-row">
           <label for="drawerEditState">State</label>
           <select id="drawerEditState">
@@ -108,12 +113,11 @@ export function renderDetailsDrawer(item, org) {
 
         <div class="edit-actions">
           <button type="button" class="btn btn-secondary" onclick="toggleDrawerEditMode()">Cancel</button>
-          <button type="button" class="btn" onclick="saveDrawerEdit()">💾 Save to Azure DevOps</button>
+          <button type="button" class="btn" onclick="saveDrawerEdit()">💾 Save</button>
         </div>
         <div class="edit-hint">💡 Tip: press <kbd>Ctrl</kbd>+<kbd>Enter</kbd> to save quickly.</div>
       </div>
 
-      <!-- VIEW MODE -->
       <div id="drawerViewMode">
 
         <div class="drawer-badges">
@@ -121,6 +125,12 @@ export function renderDetailsDrawer(item, org) {
           ${priority ? `<span class="badge badge-priority">P${escapeHtml(priority)}</span>` : ''}
           ${tags.map(t => `<span class="badge badge-tag">${escapeHtml(t)}</span>`).join('')}
         </div>
+
+        ${currentLogDate ? `
+          <div class="drawer-logdate-badge">
+            📅 Hours attributed to: <strong>${escapeHtml(currentLogDate)}</strong>
+            <button type="button" class="drawer-logdate-clear" onclick="clearDrawerLogDate()" title="Clear (use ADO's date)">×</button>
+          </div>` : ''}
 
         <div class="drawer-hours">
           <div class="drawer-hours-bar-wrap">
@@ -197,7 +207,6 @@ export function renderDetailsDrawer(item, org) {
   drawer.setAttribute('aria-hidden', 'false');
 }
 
-/* ---------- Toggle edit mode ---------- */
 export function toggleDrawerEditMode() {
   const editForm = document.getElementById('drawerEditForm');
   const viewMode = document.getElementById('drawerViewMode');
@@ -206,6 +215,10 @@ export function toggleDrawerEditMode() {
   const isEditing = editForm.style.display !== 'none';
 
   if (!isEditing) {
+    const logDateEl = document.getElementById('drawerEditLogDate');
+    if (logDateEl && currentItem) {
+      logDateEl.value = getLogDate(currentItem.id) || getLocalDateString();
+    }
     const descEl = document.getElementById('drawerEditDescription');
     if (descEl && currentItem) {
       const raw = currentItem.fields['System.Description'] || '';
@@ -218,26 +231,17 @@ export function toggleDrawerEditMode() {
 
   editForm.style.display = isEditing ? 'none' : 'block';
   viewMode.style.display = isEditing ? 'block' : 'none';
-
-  if (!isEditing) {
-    setTimeout(() => {
-      const first = document.getElementById('drawerEditState');
-      if (first) first.focus();
-    }, 50);
-  }
 }
 
 function updateDescHint() {
   const stateDD = document.getElementById('drawerEditState');
   const hint = document.getElementById('drawerEditDescHint');
   if (!stateDD || !hint) return;
-
   const newState = stateDD.value;
   const needsDesc = newState === 'Closed' || newState === 'Resolved';
   hint.textContent = needsDesc ? '(required for this state)' : '';
 }
 
-/* ---------- HTML to plain text ---------- */
 function htmlToPlain(html) {
   if (!html) return '';
   const tmp = document.createElement('div');
@@ -245,7 +249,6 @@ function htmlToPlain(html) {
   return tmp.textContent || tmp.innerText || '';
 }
 
-/* ---------- Save edit ---------- */
 export async function saveDrawerEdit() {
   if (!currentItem) return;
   const workItemId = currentItem.id;
@@ -260,6 +263,7 @@ export async function saveDrawerEdit() {
   const remaining = document.getElementById('drawerEditRemaining').value;
   const description = document.getElementById('drawerEditDescription').value.trim();
   const comment = document.getElementById('drawerEditComment').value.trim();
+  const logDate = document.getElementById('drawerEditLogDate').value;
 
   const currentState = currentItem.fields['System.State'] || '';
   const currentDescRaw = currentItem.fields['System.Description'] || '';
@@ -269,66 +273,42 @@ export async function saveDrawerEdit() {
   const currentRemaining = parseFloat(currentItem.fields['Microsoft.VSTS.Scheduling.RemainingWork'] || 0);
 
   const willClose = newState === 'Closed' || newState === 'Resolved';
-
   const fields = {};
 
-  if (newState && newState !== currentState) {
-    fields['System.State'] = newState;
-  }
-
+  if (newState && newState !== currentState) fields['System.State'] = newState;
   if (originalEst !== '' && parseFloat(originalEst) !== currentOriginal) {
     fields['Microsoft.VSTS.Scheduling.OriginalEstimate'] = parseFloat(originalEst);
   }
-
   if (completed !== '' && parseFloat(completed) !== currentCompleted) {
     fields['Microsoft.VSTS.Scheduling.CompletedWork'] = parseFloat(completed);
   }
-
-  // RemainingWork — careful handling to avoid "InvalidNotEmpty" rule error
-  // When closing: OMIT the field entirely so ADO's state rules clear it
-  // When NOT closing: send the value if > 0, or 0 if user explicitly set it
-  if (remaining !== '' && parseFloat(remaining) !== currentRemaining) {
+  if (remaining !== '' && parseFloat(remaining) !== currentRemaining && !willClose) {
     const remVal = parseFloat(remaining);
-    if (willClose) {
-      // Skip — ADO will handle RemainingWork via state rules
-    } else if (remVal >= 0) {
-      fields['Microsoft.VSTS.Scheduling.RemainingWork'] = remVal;
-    }
+    if (remVal >= 0) fields['Microsoft.VSTS.Scheduling.RemainingWork'] = remVal;
   }
-
-  // Auto-fill OriginalEstimate if user is changing state and it's currently 0
   if (fields['System.State'] && currentOriginal === 0 && !fields['Microsoft.VSTS.Scheduling.OriginalEstimate']) {
     fields['Microsoft.VSTS.Scheduling.OriginalEstimate'] = parseFloat(originalEst) || 1;
   }
-
-  // Description — required when closing
   if (description && description !== currentDescPlain) {
     fields['System.Description'] = description.replace(/\n/g, '<br>');
   } else if (willClose && !currentDescPlain && !description) {
     Swal.fire({
-      icon: 'warning',
-      title: 'Description Required',
-      text: 'Your project requires a Description when closing a work item. Please add one.',
+      icon: 'warning', title: 'Description Required',
+      text: 'Your project requires a Description when closing a work item.',
       confirmButtonColor: '#0284c7',
     });
-    const descEl = document.getElementById('drawerEditDescription');
-    if (descEl) descEl.focus();
+    document.getElementById('drawerEditDescription')?.focus();
     return;
   }
 
-  if (Object.keys(fields).length === 0 && !comment) {
-    Swal.fire({ icon: 'info', title: 'Nothing to update', timer: 1200, showConfirmButton: false });
-    return;
-  }
+  if (logDate) setLogDate(workItemId, logDate);
 
   Swal.fire({ title: 'Saving…', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
 
   try {
     if (Object.keys(fields).length > 0) {
       const patchDoc = Object.entries(fields).map(([key, value]) => ({
-        op: 'add',
-        path: `/fields/${key}`,
-        value,
+        op: 'add', path: `/fields/${key}`, value,
       }));
 
       const res = await fetch(
@@ -348,14 +328,9 @@ export async function saveDrawerEdit() {
         let msg = `Update failed (${res.status})`;
         try {
           const parsed = JSON.parse(txt);
-          if (parsed.customProperties && parsed.customProperties.ErrorMessage) {
-            msg = parsed.customProperties.ErrorMessage;
-          } else if (parsed.message) {
-            msg = parsed.message;
-          }
-        } catch (_) {
-          msg += ': ' + txt.slice(0, 300);
-        }
+          if (parsed.customProperties?.ErrorMessage) msg = parsed.customProperties.ErrorMessage;
+          else if (parsed.message) msg = parsed.message;
+        } catch (_) { msg += ': ' + txt.slice(0, 300); }
         throw new Error(msg);
       }
     }
@@ -365,23 +340,18 @@ export async function saveDrawerEdit() {
         `https://dev.azure.com/${org}/_apis/wit/workItems/${workItemId}/comments?api-version=7.1-preview.4`,
         {
           method: 'POST',
-          headers: {
-            Authorization: buildAuthHeader(pat),
-            'Content-Type': 'application/json',
-          },
+          headers: { Authorization: buildAuthHeader(pat), 'Content-Type': 'application/json' },
           body: JSON.stringify({ text: comment }),
         }
       );
-      if (!cRes.ok) {
-        console.warn('Comment failed but update succeeded');
-      }
+      if (!cRes.ok) console.warn('Comment failed but update succeeded');
     }
 
     Swal.fire({
       icon: 'success',
       title: 'Saved',
-      text: `Work item #${workItemId} updated successfully.`,
-      timer: 1500,
+      html: `Work item <strong>#${workItemId}</strong> updated.<br>Hours attributed to <strong>${logDate}</strong>.`,
+      timer: 1800,
       showConfirmButton: false,
     });
 
@@ -392,19 +362,8 @@ export async function saveDrawerEdit() {
 
   } catch (err) {
     Swal.fire({
-      icon: 'error',
-      title: 'Save Failed',
-      html: `
-        <div style="text-align:left;font-size:13px;">
-          <p style="margin-bottom:10px;">${escapeHtml(err.message)}</p>
-          <p style="color:#94a3b8;font-size:12px;">
-            Tip: Your project enforces additional required fields when changing state.
-            Check the Network tab → failed request → Response for the exact field name.
-          </p>
-        </div>
-      `,
+      icon: 'error', title: 'Save Failed', text: err.message,
       confirmButtonColor: '#0284c7',
-      width: 500,
     });
   }
 }
@@ -412,7 +371,25 @@ export async function saveDrawerEdit() {
 export function closeDetailsDrawer() {
   const drawer = document.getElementById('detailsDrawer');
   if (!drawer) return;
+  
+  // Move focus away BEFORE hiding
+  const focused = document.activeElement;
+  if (focused && drawer.contains(focused)) {
+    focused.blur();
+  }
+  
   drawer.classList.remove('open');
-  drawer.setAttribute('aria-hidden', 'true');
+  // Delay aria-hidden until transition finishes
+  setTimeout(() => {
+    drawer.setAttribute('aria-hidden', 'true');
+  }, 260);  // matches the CSS transition duration
   currentItem = null;
+}
+
+export function clearDrawerLogDate() {
+  if (!currentItem) return;
+  setLogDate(currentItem.id, null);
+  const org = localStorage.getItem('azure_org');
+  if (currentItem) renderDetailsDrawer(currentItem, org);
+  if (typeof window.refreshDashboard === 'function') window.refreshDashboard();
 }

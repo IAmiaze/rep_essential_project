@@ -1,3 +1,4 @@
+//Versioned 1.0.3
 import { CONFIG } from './js/config.js';
 import {
   qs, qsa, escapeHtml, wiqlEscape,
@@ -6,14 +7,15 @@ import {
   mapWithConcurrency,
 } from './js/utils.js';
 import {
-  runWiql, getWorkItems, getRevisions, computeHoursAddedToday,
+  runWiql, getWorkItems,
+  getAttributionDate, computeAttributedHours,
 } from './js/api.js';
 import { state, setAbortController } from './js/state.js';
 import { initKeyboardShortcuts } from './js/keyboard.js';
 import { showCardSkeletons, showTableSkeleton, renderEmptyState, buildTaskRow } from './js/render.js';
-import { renderAnalytics } from './js/charts.js';
+import { renderAnalytics, renderAnalyticsBig } from './js/charts.js';
 import {
-  getPinned, togglePin, isPinned,
+  getPinned, togglePin,
   computeProductivityScore, computeStreak,
 } from './js/productivity.js';
 import {
@@ -27,18 +29,20 @@ import {
 import { getCurrentIteration, getSprintCounts, daysRemaining } from './js/iteration.js';
 import {
   fetchWorkItemDetails, renderDetailsDrawer, closeDetailsDrawer,
-  toggleDrawerEditMode, saveDrawerEdit,
+  toggleDrawerEditMode, saveDrawerEdit, clearDrawerLogDate,
 } from './js/details.js';
 import { exportTasksToCsv, exportTasksToJson } from './js/export.js';
 import {
-  openTimeLogModal, getEntriesForTask, getEntriesForToday,
-  deleteEntry, getAllEntries, getTotalToday,
-  markEntrySynced,
+  openTimeLogModal, getEntriesForTask, getAllEntries, getTotalToday,
+  deleteEntry,
 } from './js/timetracking.js';
 import {
-  updateWorkItem,
-  changeWorkItemState, logCompletedWork, addComment,
+  updateWorkItem, addComment,
 } from './js/workitems.js';
+import { initDateFilter, computeRange, isInRange } from './js/datefilter.js';
+import { getCachedRevisions, clearRevisionCache } from './js/revisioncache.js';
+import { initTopTabs } from './js/toptabs.js';
+import { getLogDate } from './js/logdates.js';
 
 /* ============================================================
    PINNED TASKS
@@ -86,14 +90,11 @@ function updateThemeButtons(theme) {
    ============================================================ */
 window.addEventListener('DOMContentLoaded', () => {
   initTheme();
-  initKeyboardShortcuts({
-    switchTab,
-    refresh: refreshDashboard,
-    applyFilters,
-  });
+  initKeyboardShortcuts({ switchTab, refresh: refreshDashboard, applyFilters });
   initPomodoro();
+  initTopTabs(() => {});
 
-  // Event delegation for pin buttons
+  // Pin delegation
   document.addEventListener('click', (e) => {
     const pinBtn = e.target.closest('.pin-btn');
     if (!pinBtn) return;
@@ -102,19 +103,8 @@ window.addEventListener('DOMContentLoaded', () => {
     const id = pinBtn.getAttribute('data-pin-id');
     if (id) toggleTaskPin(Number(id));
   });
-  
-  // Ctrl+Enter saves when drawer edit form is open
-  document.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-      const editForm = document.getElementById('drawerEditForm');
-      if (editForm && editForm.style.display !== 'none') {
-        e.preventDefault();
-        if (typeof window.saveDrawerEdit === 'function') window.saveDrawerEdit();
-      }
-    }
-  });
 
-  // Event delegation for time-log buttons
+  // Timelog delegation
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('.timelog-btn');
     if (!btn) return;
@@ -127,13 +117,26 @@ window.addEventListener('DOMContentLoaded', () => {
     if (task) openTimeLogModal(task);
   });
 
-  // Click overlay to close any modal
+  // Overlay click closes modals
   document.addEventListener('click', (e) => {
     if (!e.target.classList.contains('modal-overlay')) return;
     const id = e.target.id;
     if (id === 'settingsModal') closeSettings();
     if (id === 'updateTaskModal') closeUpdateTaskModal();
   });
+
+  // Ctrl+Enter saves drawer edit
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      const editForm = document.getElementById('drawerEditForm');
+      if (editForm && editForm.style.display !== 'none') {
+        e.preventDefault();
+        if (typeof window.saveDrawerEdit === 'function') window.saveDrawerEdit();
+      }
+    }
+  });
+
+  initDateFilter(() => { applyFilters(); });
 
   const savedOrg = localStorage.getItem(CONFIG.LS.ORG);
   const savedEmail = localStorage.getItem(CONFIG.LS.EMAIL);
@@ -146,7 +149,6 @@ window.addEventListener('DOMContentLoaded', () => {
     fetchUserTasks(savedOrg, savedEmail, savedPat);
   }
 
-  // Register service worker (PWA)
   registerServiceWorker();
   setupPwaInstall();
 });
@@ -160,49 +162,31 @@ function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
   navigator.serviceWorker.register('./sw.js').then(reg => {
     console.log('[PWA] Service Worker registered:', reg.scope);
-  }).catch(err => {
-    console.warn('[PWA] Service Worker registration failed:', err);
-  });
+  }).catch(err => console.warn('[PWA] SW failed:', err));
 }
 
 function setupPwaInstall() {
   const installBtn = qs('#installBtn');
   if (!installBtn) return;
-
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
     deferredInstallPrompt = e;
     installBtn.style.display = 'inline-flex';
   });
-
   window.addEventListener('appinstalled', () => {
     deferredInstallPrompt = null;
     installBtn.style.display = 'none';
-    Swal.fire({
-      icon: 'success',
-      title: 'App Installed',
-      text: 'You can now launch the dashboard from your home screen or desktop.',
-      timer: 2500,
-      showConfirmButton: false,
-    });
+    Swal.fire({ icon: 'success', title: 'App Installed', timer: 2500, showConfirmButton: false });
   });
 }
 
 async function installPwa() {
   if (!deferredInstallPrompt) {
-    Swal.fire({
-      icon: 'info',
-      title: 'Install not available',
-      html: 'Your browser may already have it installed, or it doesn\'t support PWA install.<br><br><small style="color:#94a3b8;">Look for the install icon in the address bar.</small>',
-      confirmButtonColor: '#0284c7',
-    });
+    Swal.fire({ icon: 'info', title: 'Install not available', confirmButtonColor: '#0284c7' });
     return;
   }
   deferredInstallPrompt.prompt();
-  const choice = await deferredInstallPrompt.userChoice;
-  if (choice.outcome === 'accepted') {
-    Swal.fire({ icon: 'success', title: 'Installing…', timer: 1200, showConfirmButton: false });
-  }
+  await deferredInstallPrompt.userChoice;
   deferredInstallPrompt = null;
   const btn = qs('#installBtn');
   if (btn) btn.style.display = 'none';
@@ -218,12 +202,7 @@ function handleLogin() {
   const remember = qs('#rememberMe') ? qs('#rememberMe').checked : false;
 
   if (!org || !email || !pat) {
-    Swal.fire({
-      icon: 'warning',
-      title: 'Missing Fields',
-      text: 'Please enter Organization Name, Email, and PAT token.',
-      confirmButtonColor: '#0284c7',
-    });
+    Swal.fire({ icon: 'warning', title: 'Missing Fields', confirmButtonColor: '#0284c7' });
     return;
   }
 
@@ -244,35 +223,31 @@ function logout() {
   Swal.fire({
     title: 'Are you sure?',
     text: 'You will be logged out and cached credentials cleared.',
-    icon: 'question',
-    showCancelButton: true,
-    confirmButtonColor: '#ef4444',
-    cancelButtonColor: '#475569',
+    icon: 'question', showCancelButton: true,
+    confirmButtonColor: '#ef4444', cancelButtonColor: '#475569',
     confirmButtonText: 'Yes, Logout',
   }).then(result => {
     if (!result.isConfirmed) return;
     localStorage.removeItem(CONFIG.LS.ORG);
     localStorage.removeItem(CONFIG.LS.EMAIL);
     localStorage.removeItem(CONFIG.LS.PAT);
-
+    clearRevisionCache();
     qs('#dashboardSection').style.display = 'none';
     qs('#loginSection').style.display = 'block';
-
     state.allFetchedTasks = [];
     state.backlogTasks = [];
     state.currentFilteredTasks = [];
-
     Swal.fire({ icon: 'success', title: 'Logged Out', timer: 1200, showConfirmButton: false });
   });
 }
 
 /* ============================================================
-   MAIN FETCH
+   MAIN FETCH — progressive loading
    ============================================================ */
 async function fetchUserTasks(org, email, pat) {
   Swal.fire({
     title: 'Connecting to Azure DevOps',
-    text: 'Fetching work items and calculating capacity...',
+    text: 'Fetching work items...',
     allowOutsideClick: false,
     didOpen: () => Swal.showLoading(),
   });
@@ -288,6 +263,7 @@ async function fetchUserTasks(org, email, pat) {
   const signal = setAbortController().signal;
 
   try {
+    /* PHASE 1 — Fast path: IDs + work items only */
     const wiqlQuery = `SELECT [System.Id] FROM WorkItems WHERE [System.AssignedTo] CONTAINS '${wiqlEscape(email)}' ORDER BY [System.ChangedDate] DESC`;
     const ids = await runWiql(org, pat, wiqlQuery, signal);
 
@@ -305,11 +281,10 @@ async function fetchUserTasks(org, email, pat) {
     const currentYearMonth = todayStr.substring(0, 7);
     state.projectTeamsMap = {};
 
-    const tasks = await mapWithConcurrency(fetchedItems, CONFIG.REVISION_CONCURRENCY, async item => {
+    const tasksFast = fetchedItems.map(item => {
       const fields = item.fields || {};
       const changedDateObj = fields['System.ChangedDate']
-        ? new Date(fields['System.ChangedDate'])
-        : new Date();
+        ? new Date(fields['System.ChangedDate']) : new Date();
       const changedDateStr = fields['System.ChangedDate'] ? getLocalDateString(changedDateObj) : '';
 
       const project = fields['System.TeamProject'] || 'N/A';
@@ -319,18 +294,17 @@ async function fetchUserTasks(org, email, pat) {
       if (!state.projectTeamsMap[project]) state.projectTeamsMap[project] = new Set();
       state.projectTeamsMap[project].add(team);
 
-      const totalCompleted = parseFloat(fields['Microsoft.VSTS.Scheduling.CompletedWork'] || 0);
-      const remainingHrs = parseFloat(fields['Microsoft.VSTS.Scheduling.RemainingWork'] || 0);
-
-      let todayLoggedHours = 0;
-      if (changedDateStr === todayStr) {
-        try {
-          const revs = await getRevisions(org, pat, item.id, signal);
-          todayLoggedHours = computeHoursAddedToday(revs, todayStr);
-        } catch (_) { todayLoggedHours = 0; }
-      }
+      const assigned = fields['System.AssignedTo'];
+      const assignedTo = typeof assigned === 'object'
+        ? (assigned.displayName || assigned.uniqueName || 'Unknown')
+        : (assigned || 'Unknown');
 
       const directTaskUrl = `https://dev.azure.com/${org}/${encodeURIComponent(project)}/_workitems/edit/${item.id}`;
+
+      const userLogDate = getLogDate(item.id);
+      const attributionDate = userLogDate || getAttributionDate(fields, [], changedDateStr);
+
+      const totalCompleted = parseFloat(fields['Microsoft.VSTS.Scheduling.CompletedWork'] || 0);
 
       return {
         id: item.id,
@@ -339,17 +313,23 @@ async function fetchUserTasks(org, email, pat) {
         title: fields['System.Title'] || 'Untitled',
         state: fields['System.State'] || 'Unknown',
         changedDate: changedDateStr,
-        todayLoggedHours,
+        lastLogDate: attributionDate,
+        attributionDate,
+        _userLogDate: !!userLogDate,
+        _revisionsLoaded: false,
+        assignedTo,
+        todayLoggedHours: computeAttributedHours(attributionDate, totalCompleted, todayStr),
         totalCompleted,
-        remainingHrs,
-        isToday: changedDateStr === todayStr,
-        isThisWeek: isDateInCurrentWeek(changedDateObj),
-        isThisMonth: changedDateStr.startsWith(currentYearMonth),
+        remainingHrs: parseFloat(fields['Microsoft.VSTS.Scheduling.RemainingWork'] || 0),
+        isToday: attributionDate === todayStr,
+        isThisWeek: isDateInCurrentWeek(new Date(attributionDate)),
+        isThisMonth: attributionDate.startsWith(currentYearMonth),
         taskUrl: directTaskUrl,
+        _rawFields: fields,
       };
     });
 
-    state.allFetchedTasks = tasks.filter(t => !t.__error);
+    state.allFetchedTasks = tasksFast;
     markPinned();
 
     populateProjectFilter();
@@ -357,6 +337,7 @@ async function fetchUserTasks(org, email, pat) {
     populateStatusFilter();
     const todayStats = calculateOverallStats();
     renderAnalytics(state.allFetchedTasks);
+    renderAnalyticsBig(state.allFetchedTasks);
     updateProductivityPanel();
     applyFilters();
 
@@ -370,11 +351,15 @@ async function fetchUserTasks(org, email, pat) {
 
     Swal.fire({
       icon: 'success',
-      title: 'Dashboard Loaded',
-      text: `Successfully synced ${state.allFetchedTasks.length} work items.`,
+      title: 'Dashboard Ready',
+      text: `Loaded ${state.allFetchedTasks.length} items. Refining dates in the background…`,
       timer: 1500,
       showConfirmButton: false,
     });
+
+    /* PHASE 2 — Background: fetch revisions, refine attribution */
+    refineTasksInBackground(org, pat, signal, todayStr, currentYearMonth);
+
   } catch (err) {
     if (err.name === 'AbortError') return;
     Swal.fire({
@@ -388,6 +373,60 @@ async function fetchUserTasks(org, email, pat) {
     state.allFetchedTasks = [];
     state.backlogTasks = [];
   }
+}
+
+/* ============================================================
+   BACKGROUND REFINEMENT
+   ============================================================ */
+async function refineTasksInBackground(org, pat, signal, todayStr, currentYearMonth) {
+  const tasks = state.allFetchedTasks;
+  let completed = 0;
+  const total = tasks.length;
+
+  const cardSub = qs('#cardTodayHours')?.parentElement?.querySelector('.sub-value');
+
+  await mapWithConcurrency(tasks, CONFIG.REVISION_CONCURRENCY, async (task) => {
+    if (signal && signal.aborted) return;
+    try {
+      const revisions = await getCachedRevisions(org, pat, task.id, signal);
+      const fields = task._rawFields || {};
+
+      const userLogDate = getLogDate(task.id);
+      const attributionDate = userLogDate || getAttributionDate(fields, revisions, task.changedDate);
+
+      task.attributionDate = attributionDate;
+      task.lastLogDate = attributionDate;
+      task._revisionsLoaded = true;
+
+      const totalCompleted = parseFloat(fields['Microsoft.VSTS.Scheduling.CompletedWork'] || 0);
+      task.todayLoggedHours = computeAttributedHours(attributionDate, totalCompleted, todayStr);
+      task.isToday = attributionDate === todayStr;
+      task.isThisWeek = isDateInCurrentWeek(new Date(attributionDate));
+      task.isThisMonth = attributionDate.startsWith(currentYearMonth);
+    } catch (_) { /* skip */ }
+
+    completed++;
+
+    if (completed % 5 === 0 || completed === total) {
+      if (cardSub) cardSub.textContent = `Refining… ${completed}/${total}`;
+    }
+  });
+
+  if (signal && signal.aborted) return;
+
+  // Reset subtitle back to normal
+  if (cardSub) {
+    cardSub.textContent = 'Belongs to today';
+    delete cardSub.dataset.refined;
+  }
+
+  calculateOverallStats();
+  renderAnalytics(state.allFetchedTasks);
+  renderAnalyticsBig(state.allFetchedTasks);
+  updateProductivityPanel();
+  applyFilters();
+
+  console.log('[Dashboard] Background refinement complete — cards updated with final attribution.');
 }
 
 /* ============================================================
@@ -421,20 +460,14 @@ async function fetchTeamBacklog() {
 
   if (selectedProject === 'ALL') {
     Swal.fire({
-      icon: 'info',
-      title: 'Select Specific Project',
-      text: 'Please select a specific Project from the dropdown to load its Team Backlog.',
+      icon: 'info', title: 'Select Specific Project',
+      text: 'Please select a specific Project to load its Team Backlog.',
       confirmButtonColor: '#0284c7',
     });
     return;
   }
 
-  Swal.fire({
-    title: 'Loading Backlog',
-    text: `Fetching backlog for ${selectedProject}...`,
-    allowOutsideClick: false,
-    didOpen: () => Swal.showLoading(),
-  });
+  Swal.fire({ title: 'Loading Backlog', text: `Fetching ${selectedProject}...`, allowOutsideClick: false, didOpen: () => Swal.showLoading() });
 
   const signal = setAbortController().signal;
 
@@ -444,7 +477,7 @@ async function fetchTeamBacklog() {
 
     if (ids.length === 0) {
       state.backlogTasks = [];
-      Swal.fire('Notice', 'No backlog items found for this project.', 'info');
+      Swal.fire('Notice', 'No backlog items found.', 'info');
       applyFilters();
       return;
     }
@@ -467,6 +500,7 @@ async function fetchTeamBacklog() {
         title: fields['System.Title'] || 'Untitled',
         state: fields['System.State'] || 'Unknown',
         changedDate: changedDateStr,
+        attributionDate: changedDateStr,
         todayLoggedHours: 0,
         totalCompleted: parseFloat(fields['Microsoft.VSTS.Scheduling.CompletedWork'] || 0),
         remainingHrs: parseFloat(fields['Microsoft.VSTS.Scheduling.RemainingWork'] || 0),
@@ -481,12 +515,7 @@ async function fetchTeamBacklog() {
     applyFilters();
   } catch (err) {
     if (err.name === 'AbortError') return;
-    Swal.fire({
-      icon: 'error',
-      title: 'Backlog Fetch Failed',
-      text: err.message,
-      confirmButtonColor: '#0284c7',
-    });
+    Swal.fire({ icon: 'error', title: 'Backlog Fetch Failed', text: err.message, confirmButtonColor: '#0284c7' });
   }
 }
 
@@ -509,7 +538,6 @@ function populateTeamFilter(selectedProject) {
   const dd = qs('#teamFilter');
   if (!dd) return;
   dd.innerHTML = '<option value="ALL">All Teams</option>';
-
   const teams = new Set();
   if (selectedProject === 'ALL') {
     Object.values(state.projectTeamsMap).forEach(s => s.forEach(t => teams.add(t)));
@@ -527,11 +555,9 @@ function populateTypeFilter() {
   const container = qs('#dynamicTypeOptions');
   if (!container) return;
   container.innerHTML = '';
-
   const source = state.currentTab === 'BACKLOG' ? state.backlogTasks : state.allFetchedTasks;
   const types = new Set();
   source.forEach(t => t.type && types.add(t.type));
-
   Array.from(types).sort().forEach(type => {
     const opt = document.createElement('option');
     opt.value = type; opt.innerText = type;
@@ -543,11 +569,9 @@ function populateStatusFilter() {
   const container = qs('#dynamicStateOptions');
   if (!container) return;
   container.innerHTML = '';
-
   const source = state.currentTab === 'BACKLOG' ? state.backlogTasks : state.allFetchedTasks;
   const states = new Set();
   source.forEach(t => t.state && states.add(t.state));
-
   Array.from(states).sort().forEach(s => {
     const opt = document.createElement('option');
     opt.value = s; opt.innerText = s;
@@ -563,33 +587,40 @@ function handleProjectChange() {
 }
 
 /* ============================================================
-   STATS
+   STATS — with task count subtitles
    ============================================================ */
 function calculateOverallStats() {
-  let todayActive = 0, todayHours = 0, todayCompleted = 0;
+  // IMPORTANT: Cards ignore the date-range filter — they always show their own period
+  // (Today / This Week / This Month).
+  // The date-range filter only affects the TASK TABLE.
+
+  let todayActive = 0, todayLoggedHours = 0, todayCompleted = 0;
   let weekItems = 0, weekLoggedHours = 0, weekRemainingHours = 0;
   let monthItems = 0, monthLoggedHours = 0, monthActive = 0, monthClosed = 0, monthPendingHours = 0;
   let totalActiveTasks = 0, totalClosedTasks = 0, totalHoursOverall = 0;
 
+  // Round helper to avoid float drift
+  const r = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
   state.allFetchedTasks.forEach(task => {
     const closed = isClosedState(task.state);
     if (closed) totalClosedTasks++; else totalActiveTasks++;
-    totalHoursOverall += task.totalCompleted;
+    totalHoursOverall += r(task.totalCompleted);
 
     if (task.isToday) {
-      todayHours += task.todayLoggedHours;
+      todayLoggedHours += r(task.todayLoggedHours);
       if (closed) todayCompleted++; else todayActive++;
     }
     if (task.isThisWeek) {
       weekItems++;
-      weekLoggedHours += task.totalCompleted;
-      if (!closed) weekRemainingHours += task.remainingHrs;
+      weekLoggedHours += r(task.totalCompleted);
+      if (!closed) weekRemainingHours += r(task.remainingHrs);
     }
     if (task.isThisMonth) {
       monthItems++;
-      monthLoggedHours += task.totalCompleted;
+      monthLoggedHours += r(task.totalCompleted);
       if (closed) monthClosed++;
-      else { monthActive++; monthPendingHours += task.remainingHrs; }
+      else { monthActive++; monthPendingHours += r(task.remainingHrs); }
     }
   });
 
@@ -598,23 +629,31 @@ function calculateOverallStats() {
   const totalProjectsCount = Object.keys(state.projectTeamsMap).length;
   let totalTeamsCount = 0;
   Object.values(state.projectTeamsMap).forEach(s => totalTeamsCount += s.size);
-  const avgDailyHours = todayHours > 0 ? todayHours : weekLoggedHours / 5;
+  const avgDailyHours = todayLoggedHours > 0 ? todayLoggedHours : weekLoggedHours / 5;
 
   const setTxt = (id, val) => { const el = qs('#' + id); if (el) el.innerText = val; };
+  const setSub = (id, val) => {
+    const el = qs('#' + id);
+    if (!el) return;
+    const sub = el.parentElement?.querySelector('.sub-value');
+    if (sub) sub.textContent = val;
+  };
 
   setTxt('cardTodayActive', todayActive);
-  setTxt('cardTodayHours', `${todayHours.toFixed(1)} hrs`);
+  setTxt('cardTodayHours', `${todayLoggedHours.toFixed(1)} hrs`);
   setTxt('cardTodayCompleted', todayCompleted);
   setTxt('cardTodayTarget', `${CONFIG.DAILY_TARGET_HOURS.toFixed(1)} hrs`);
 
   setTxt('cardWeekItems', weekItems);
   setTxt('cardWeekHours', `${weekLoggedHours.toFixed(1)} hrs`);
+  setSub('cardWeekHours', `${weekItems} item${weekItems === 1 ? '' : 's'} this week`);
   setTxt('cardWeekCapacity', `${capacityPct}%`);
   setTxt('cardWeekCapacitySub', `${weekLoggedHours.toFixed(1)} / ${target} hrs`);
   setTxt('cardWeekRemaining', `${weekRemainingHours.toFixed(1)} hrs`);
 
   setTxt('cardMonthItems', monthItems);
   setTxt('cardMonthLogged', `${monthLoggedHours.toFixed(1)} hrs`);
+  setSub('cardMonthLogged', `${monthItems} item${monthItems === 1 ? '' : 's'} this month`);
   setTxt('cardMonthActive', monthActive);
   setTxt('cardMonthClosed', monthClosed);
   setTxt('cardMonthPendingHours', `${monthPendingHours.toFixed(1)} hrs`);
@@ -627,7 +666,7 @@ function calculateOverallStats() {
   setTxt('profileClosedTasks', totalClosedTasks);
   setTxt('profileTotalHours', `${totalHoursOverall.toFixed(1)} hrs`);
 
-  return { todayHours, todayActive, todayCompleted };
+  return { todayHours: todayLoggedHours, todayActive, todayCompleted };
 }
 
 /* ============================================================
@@ -648,7 +687,7 @@ function switchTab(tab) {
 }
 
 /* ============================================================
-   PAGINATION + FILTERS
+   PAGINATION + FILTERS — with count badge
    ============================================================ */
 function handleRowsPerPageChange() {
   const el = qs('#rowsPerPage');
@@ -665,12 +704,16 @@ function applyFilters() {
   const stateFilter = qs('#stateFilter') ? qs('#stateFilter').value : 'ALL';
 
   const source = state.currentTab === 'BACKLOG' ? state.backlogTasks : state.allFetchedTasks;
+  const range = computeRange();
 
   state.currentFilteredTasks = source.filter(task => {
+    if (state.currentTab !== 'ALL') {
+      const taskDate = task.attributionDate || task.changedDate;
+      if (!isInRange(taskDate, range)) return false;
+    }
     if (state.currentTab === 'TODAY' && !task.isToday) return false;
     if (state.currentTab === 'WEEK' && !task.isThisWeek) return false;
     if (state.currentTab === 'MONTH' && !task.isThisMonth) return false;
-
     if (projectFilter !== 'ALL' && task.project !== projectFilter) return false;
     if (teamFilter !== 'ALL' && task.team !== teamFilter) return false;
     if (typeFilter !== 'ALL' && task.type !== typeFilter) return false;
@@ -680,7 +723,6 @@ function applyFilters() {
 
     const closed = isClosedState(task.state);
     const isNew = isNewState(task.state);
-
     let matchesState = true;
     if (stateFilter === 'NEW') matchesState = isNew;
     else if (stateFilter === 'ACTIVE') matchesState = !closed && !isNew;
@@ -696,6 +738,14 @@ function applyFilters() {
     return 0;
   });
 
+  // Date range count badge
+  const countEl = qs('#dateRangeCount');
+  if (countEl) {
+    const total = source.length;
+    const shown = state.currentFilteredTasks.length;
+    countEl.textContent = `(${shown} of ${total} items)`;
+  }
+
   state.currentPage = 1;
   renderPaginatedTable();
 }
@@ -703,15 +753,12 @@ function applyFilters() {
 function renderPaginatedTable() {
   const totalItems = state.currentFilteredTasks.length;
   const totalPages = Math.ceil(totalItems / state.rowsPerPage) || 1;
-
   if (state.currentPage > totalPages) state.currentPage = totalPages;
   if (state.currentPage < 1) state.currentPage = 1;
 
   const start = (state.currentPage - 1) * state.rowsPerPage;
   const end = Math.min(start + state.rowsPerPage, totalItems);
-  const pageTasks = state.currentFilteredTasks.slice(start, end);
-
-  renderTable(pageTasks);
+  renderTable(state.currentFilteredTasks.slice(start, end));
 
   const pageInfo = qs('#pageInfo');
   const pageIndicator = qs('#pageIndicator');
@@ -742,19 +789,17 @@ function renderTable(tasks) {
     renderEmptyState(tbody, 'No work items matching this view.', 'Try adjusting filters or switching tabs.');
     return;
   }
-
   const frag = document.createDocumentFragment();
   tasks.forEach(task => frag.appendChild(buildTaskRow(task)));
   tbody.appendChild(frag);
 }
 
 /* ============================================================
-   PRODUCTIVITY PANEL
+   PRODUCTIVITY
    ============================================================ */
 function updateProductivityPanel() {
   const score = computeProductivityScore(state.allFetchedTasks);
   const streak = computeStreak(state.allFetchedTasks, getLocalDateString());
-
   const setTxt = (id, val) => { const el = qs('#' + id); if (el) el.innerText = val; };
   setTxt('profileScore', score);
   setTxt('profileStreak', `${streak.current} days`);
@@ -762,7 +807,7 @@ function updateProductivityPanel() {
 }
 
 /* ============================================================
-   SPRINT SUMMARY
+   SPRINT — skip area-path teams
    ============================================================ */
 async function loadSprintSummary() {
   const org = localStorage.getItem(CONFIG.LS.ORG);
@@ -774,7 +819,10 @@ async function loadSprintSummary() {
   const project = projects[0];
   const teams = Array.from(state.projectTeamsMap[project] || []);
   if (!teams.length) return;
-  const team = teams[0];
+
+  // Prefer real team names (no spaces or backslashes) over area-path teams
+  const team = teams.find(t => !t.includes(' ') && !t.includes('\\'));
+  if (!team) return;  // No valid team configured — skip sprint panel
 
   const panel = qs('#sprintSummary');
   if (!panel) return;
@@ -783,7 +831,6 @@ async function loadSprintSummary() {
     const signal = state.abortController ? state.abortController.signal : undefined;
     const it = await getCurrentIteration(org, pat, project, team, signal);
     if (!it) return;
-
     const counts = await getSprintCounts(org, pat, project, it.path, signal);
     const remaining = daysRemaining(it.finishDate);
 
@@ -794,23 +841,18 @@ async function loadSprintSummary() {
     const pct = myTotal ? Math.round((closedCount / myTotal) * 100) : 0;
 
     qs('#sprintName').innerText = it.name || '—';
-    qs('#sprintDates').innerText =
-      `${formatShortDate(it.startDate)} → ${formatShortDate(it.finishDate)}`;
+    qs('#sprintDates').innerText = `${formatShortDate(it.startDate)} → ${formatShortDate(it.finishDate)}`;
     qs('#sprintDays').innerText = remaining != null ? remaining : '—';
     qs('#sprintProgressFill').style.width = `${pct}%`;
     qs('#sprintProgressText').innerText = `${closedCount} / ${myTotal} my items closed`;
     qs('#sprintProgressPct').innerText = `${pct}%`;
-
     panel.style.display = 'block';
-  } catch (_) {
-    // Silent
-  }
+  } catch (_) { /* silent */ }
 }
 
 function formatShortDate(iso) {
   if (!iso) return '—';
-  const d = new Date(iso);
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 /* ============================================================
@@ -837,7 +879,6 @@ async function openDetails(workItemId) {
         <div class="skeleton skeleton-text" style="width:70%;height:20px;margin-bottom:14px;"></div>
         <div class="skeleton skeleton-text" style="width:100%;margin-bottom:8px;"></div>
         <div class="skeleton skeleton-text" style="width:90%;margin-bottom:8px;"></div>
-        <div class="skeleton skeleton-text" style="width:80%;"></div>
       </div>
     `;
     drawer.classList.add('open');
@@ -856,8 +897,7 @@ async function openDetails(workItemId) {
           <button type="button" class="drawer-close" onclick="closeDetailsDrawer()" aria-label="Close">×</button>
         </div>
         <div class="drawer-body">
-          <p style="color:#f43f5e;">Failed to load work item #${escapeHtml(workItemId)}.</p>
-          <p style="color:var(--text-muted);font-size:12px;margin-top:8px;">${escapeHtml(e.message)}</p>
+          <p style="color:#f43f5e;">Failed to load #${escapeHtml(workItemId)}.</p>
         </div>
       `;
     }
@@ -865,14 +905,74 @@ async function openDetails(workItemId) {
 }
 
 function copyToClipboard(text) {
-  navigator.clipboard.writeText(String(text)).then(() => {
-    Swal.fire({
-      icon: 'success',
-      title: 'Copied',
-      text: `#${text} copied to clipboard`,
-      timer: 900,
-      showConfirmButton: false,
-    });
+  const str = String(text);
+
+  // Try modern clipboard API (works on HTTPS or localhost)
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(str)
+      .then(() => showCopied(str))
+      .catch(() => legacyCopy(str));
+    return;
+  }
+
+  // Fallback for HTTP LAN access
+  legacyCopy(str);
+}
+
+function legacyCopy(str) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = str;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+
+    // Select + copy
+    ta.select();
+    ta.setSelectionRange(0, str.length);
+    const ok = document.execCommand('copy');
+
+    document.body.removeChild(ta);
+
+    if (ok) {
+      showCopied(str);
+    } else {
+      showCopyPrompt(str);
+    }
+  } catch (_) {
+    showCopyPrompt(str);
+  }
+}
+
+function showCopied(str) {
+  Swal.fire({
+    icon: 'success',
+    title: 'Copied!',
+    html: `Copied <strong>#${escapeHtml(str)}</strong> to clipboard.`,
+    timer: 1200,
+    showConfirmButton: false,
+  });
+}
+
+function showCopyPrompt(str) {
+  Swal.fire({
+    icon: 'info',
+    title: 'Copy manually',
+    html: `
+      <p style="margin-bottom:10px;">Auto-copy is not available on this browser.</p>
+      <input type="text" value="${escapeHtml(str)}" readonly
+        style="width:100%;padding:10px;border-radius:6px;border:1px solid #334155;background:#334155;color:#f8fafc;font-size:16px;text-align:center;"
+        onclick="this.select()"
+        id="copyFallbackInput">
+    `,
+    confirmButtonText: 'Done',
+    confirmButtonColor: '#0284c7',
+    didOpen: () => {
+      const inp = document.getElementById('copyFallbackInput');
+      if (inp) { inp.focus(); inp.select(); }
+    },
   });
 }
 
@@ -880,17 +980,15 @@ function copyToClipboard(text) {
    EXPORT
    ============================================================ */
 function exportCurrentViewCsv() {
-  const label = `tasks_${state.currentTab.toLowerCase()}`;
-  exportTasksToCsv(state.currentFilteredTasks, label);
+  exportTasksToCsv(state.currentFilteredTasks, `tasks_${state.currentTab.toLowerCase()}`);
 }
 
 function exportCurrentViewJson() {
-  const label = `tasks_${state.currentTab.toLowerCase()}`;
-  exportTasksToJson(state.currentFilteredTasks, label);
+  exportTasksToJson(state.currentFilteredTasks, `tasks_${state.currentTab.toLowerCase()}`);
 }
 
 /* ============================================================
-   TIMELOG UTILITIES
+   TIMELOG
    ============================================================ */
 function removeTimeEntry(entryId) {
   deleteEntry(entryId);
@@ -902,7 +1000,7 @@ function refreshTimelogBadges() {
 }
 
 /* ============================================================
-   UPDATE TASK
+   UPDATE TASK MODAL
    ============================================================ */
 let updateTaskId = null;
 
@@ -912,13 +1010,18 @@ function openUpdateTaskModal(taskId) {
   if (!task) return;
 
   updateTaskId = task.id;
-  qs('#updateState').value = '';
-  qs('#updateCompleted').value = '';
-  qs('#updateComment').value = '';
+  const stateEl = qs('#updateState');
+  const completedEl = qs('#updateCompleted');
+  const remainingEl = qs('#updateRemaining');
+  const commentEl = qs('#updateComment');
+
+  if (stateEl) stateEl.value = '';
+  if (completedEl) completedEl.value = task.totalCompleted || '';
+  if (remainingEl) remainingEl.value = task.remainingHrs || '';
+  if (commentEl) commentEl.value = '';
 
   const modal = qs('#updateTaskModal');
-  modal.classList.add('open');
-  modal.setAttribute('aria-hidden', 'false');
+  if (modal) { modal.classList.add('open'); modal.setAttribute('aria-hidden', 'false'); }
 }
 
 function closeUpdateTaskModal() {
@@ -931,50 +1034,39 @@ function closeUpdateTaskModal() {
 
 async function submitUpdateTask() {
   if (!updateTaskId) return;
-
   const org = localStorage.getItem(CONFIG.LS.ORG);
   const pat = localStorage.getItem(CONFIG.LS.PAT);
 
   const newState = qs('#updateState').value;
-  const completed = qs('#updateCompleted').value;
+  const completedInput = qs('#updateCompleted').value;
+  const remainingInput = qs('#updateRemaining') ? qs('#updateRemaining').value : '';
   const comment = qs('#updateComment').value.trim();
 
-  if (!newState && !completed && !comment) {
+  if (!newState && completedInput === '' && remainingInput === '' && !comment) {
     Swal.fire({ icon: 'info', title: 'Nothing to update', timer: 1200, showConfirmButton: false });
     return;
+  }
+
+  const willClose = newState === 'Closed' || newState === 'Resolved';
+  const fields = {};
+  if (newState) fields['System.State'] = newState;
+  if (completedInput !== '') fields['Microsoft.VSTS.Scheduling.CompletedWork'] = parseFloat(completedInput);
+  if (remainingInput !== '' && !willClose) {
+    const remVal = parseFloat(remainingInput);
+    if (remVal >= 0) fields['Microsoft.VSTS.Scheduling.RemainingWork'] = remVal;
   }
 
   Swal.fire({ title: 'Updating...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
 
   try {
-    if (newState) {
-      await changeWorkItemState(org, pat, updateTaskId, newState);
-    }
-    if (completed) {
-      await logCompletedWork(org, pat, updateTaskId, parseFloat(completed));
-    }
-    if (comment) {
-      await addComment(org, pat, updateTaskId, comment);
-    }
-
+    if (Object.keys(fields).length > 0) await updateWorkItem(org, pat, updateTaskId, fields);
+    if (comment) await addComment(org, pat, updateTaskId, comment);
     closeUpdateTaskModal();
-
-    Swal.fire({
-      icon: 'success',
-      title: 'Updated',
-      text: `Work item #${updateTaskId} updated successfully.`,
-      timer: 1500,
-      showConfirmButton: false,
-    });
-
+    Swal.fire({ icon: 'success', title: 'Updated', timer: 1500, showConfirmButton: false });
+    clearRevisionCache();
     refreshDashboard();
   } catch (err) {
-    Swal.fire({
-      icon: 'error',
-      title: 'Update Failed',
-      text: err.message,
-      confirmButtonColor: '#0284c7',
-    });
+    Swal.fire({ icon: 'error', title: 'Update Failed', text: err.message, confirmButtonColor: '#0284c7' });
   }
 }
 
@@ -990,16 +1082,11 @@ function refreshDashboard() {
   const org = localStorage.getItem(CONFIG.LS.ORG) || qs('#orgName').value.trim();
   const email = localStorage.getItem(CONFIG.LS.EMAIL) || qs('#userEmail').value.trim();
   const pat = localStorage.getItem(CONFIG.LS.PAT) || qs('#patToken').value.trim();
-
   if (!org || !email || !pat) {
-    Swal.fire({
-      icon: 'info',
-      title: 'No credentials',
-      text: 'Please log in again.',
-      confirmButtonColor: '#0284c7',
-    });
+    Swal.fire({ icon: 'info', title: 'No credentials', confirmButtonColor: '#0284c7' });
     return;
   }
+  clearRevisionCache();
   state.backlogTasks = [];
   fetchUserTasks(org, email, pat);
 }
@@ -1008,41 +1095,19 @@ function refreshDashboard() {
    EXPOSE TO WINDOW
    ============================================================ */
 Object.assign(window, {
-  toggleTheme,
-  handleLogin,
-  logout,
-  switchTab,
-  applyFilters,
-  handleProjectChange,
-  handleRowsPerPageChange,
-  changePage,
-  fetchTeamBacklog,
-  refreshDashboard,
-  toggleTaskPin,
-  pomodoroStart,
-  pomodoroPause,
-  pomodoroReset,
-  openSettings,
-  closeSettings,
-  saveSettingsFromForm,
-  resetSettingsFromForm,
-  openDetails,
-  closeDetailsDrawer,
-  copyToClipboard,
-  loadSprintSummary,
-  exportCurrentViewCsv,
-  exportCurrentViewJson,
-  openTimeLogModal,
-  removeTimeEntry,
-  refreshTimelogBadges,
-  getEntriesForTask,
-  getAllEntries,
-  getTotalToday,
+  toggleTheme, handleLogin, logout, switchTab, applyFilters,
+  handleProjectChange, handleRowsPerPageChange, changePage,
+  fetchTeamBacklog, refreshDashboard, toggleTaskPin,
+  pomodoroStart, pomodoroPause, pomodoroReset,
+  openSettings, closeSettings, saveSettingsFromForm, resetSettingsFromForm,
+  openDetails, closeDetailsDrawer, copyToClipboard, loadSprintSummary,
+  exportCurrentViewCsv, exportCurrentViewJson,
+  openTimeLogModal, removeTimeEntry, refreshTimelogBadges,
+  getEntriesForTask, getAllEntries, getTotalToday,
   installPwa,
-  openUpdateTaskModal,
-  closeUpdateTaskModal,
-  submitUpdateTask,
-  promptUpdateTask,
-  toggleDrawerEditMode,
-  saveDrawerEdit,
+  openUpdateTaskModal, closeUpdateTaskModal, submitUpdateTask, promptUpdateTask,
+  toggleDrawerEditMode, saveDrawerEdit, clearDrawerLogDate,
 });
+
+// Debug: expose state for console inspection
+window.state = state;

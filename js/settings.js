@@ -1,7 +1,6 @@
 import { getSettings, saveSettings, resetSettings, CONFIG } from './config.js';
 import { qs } from './utils.js';
 
-/* ---------- Open/close ---------- */
 export function openSettings() {
   const modal = qs('#settingsModal');
   if (!modal) return;
@@ -17,7 +16,6 @@ export function closeSettings() {
   modal.setAttribute('aria-hidden', 'true');
 }
 
-/* ---------- Hydrate form with current values ---------- */
 function hydrateForm() {
   const s = getSettings();
   const set = (id, val) => { const el = qs('#' + id); if (el) el.value = val; };
@@ -29,6 +27,7 @@ function hydrateForm() {
   check('settingNotifications', s.notificationsEnabled);
   check('settingDailyReminder', s.dailyGoalReminder);
   check('settingEodSummary', s.eodSummary);
+  check('settingUseTargetDate', s.useTargetDateForAttribution);
 
   const notifStatus = qs('#notifPermissionStatus');
   if (notifStatus && 'Notification' in window) {
@@ -36,7 +35,6 @@ function hydrateForm() {
   }
 }
 
-/* ---------- Save ---------- */
 export async function saveSettingsFromForm() {
   const get = id => qs('#' + id);
   const weekly = parseFloat(get('settingWeekly').value) || 30;
@@ -45,15 +43,15 @@ export async function saveSettingsFromForm() {
   const notifOn = get('settingNotifications').checked;
   const dailyOn = get('settingDailyReminder').checked;
   const eodOn = get('settingEodSummary').checked;
+  const useTarget = get('settingUseTargetDate').checked;
 
-  // Request permission if user enabled notifications
   if (notifOn && 'Notification' in window && Notification.permission === 'default') {
     const perm = await Notification.requestPermission();
     if (perm !== 'granted') {
       Swal.fire({
         icon: 'warning',
         title: 'Notifications blocked',
-        text: 'Browser denied notification permission. Enable it in site settings to receive alerts.',
+        text: 'Browser denied notification permission.',
         confirmButtonColor: '#0284c7',
       });
     }
@@ -66,29 +64,18 @@ export async function saveSettingsFromForm() {
     notificationsEnabled: notifOn,
     dailyGoalReminder: dailyOn,
     eodSummary: eodOn,
+    useTargetDateForAttribution: useTarget,
   });
 
-  Swal.fire({
-    icon: 'success',
-    title: 'Settings saved',
-    timer: 1000,
-    showConfirmButton: false,
-  });
+  Swal.fire({ icon: 'success', title: 'Settings saved', timer: 1000, showConfirmButton: false });
 }
 
-/* ---------- Reset ---------- */
 export function resetSettingsFromForm() {
   resetSettings();
   hydrateForm();
-  Swal.fire({
-    icon: 'success',
-    title: 'Reset to defaults',
-    timer: 1000,
-    showConfirmButton: false,
-  });
+  Swal.fire({ icon: 'success', title: 'Reset to defaults', timer: 1000, showConfirmButton: false });
 }
 
-/* ---------- Notifications helper ---------- */
 export function notify(title, body, tag) {
   const s = getSettings();
   if (!s.notificationsEnabled) return;
@@ -99,7 +86,6 @@ export function notify(title, body, tag) {
   } catch (_) { /* ignore */ }
 }
 
-/* ---------- Daily checks (call on load) ---------- */
 export function runDailyChecks(stats) {
   const s = getSettings();
   if (!s.notificationsEnabled) return;
@@ -108,7 +94,6 @@ export function runDailyChecks(stats) {
   const lastDaily = localStorage.getItem('last_daily_notif');
   const lastEod = localStorage.getItem('last_eod_notif');
 
-  // Daily goal reminder (fires once per day)
   if (s.dailyGoalReminder && lastDaily !== todayKey) {
     notify(
       '🌅 Good morning',
@@ -118,7 +103,6 @@ export function runDailyChecks(stats) {
     localStorage.setItem('last_daily_notif', todayKey);
   }
 
-  // End-of-day summary (fires after 17:00 once per day)
   const hour = new Date().getHours();
   if (s.eodSummary && hour >= 17 && lastEod !== todayKey && stats) {
     notify(

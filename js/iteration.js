@@ -4,6 +4,12 @@ import { buildAuthHeader } from './api.js';
 /* ---------- Get current iteration/team settings ---------- */
 export async function getCurrentIteration(org, pat, project, team, signal) {
   try {
+    // Skip if team is empty or equals the project name
+    if (!team || team === project) return null;
+
+    // Skip if team contains a space or is likely an area path, not a team
+    if (team.includes(' ') || team.includes('\\')) return null;
+
     const url = `https://dev.azure.com/${org}/${encodeURIComponent(project)}/${encodeURIComponent(team)}/_apis/work/teamsettings/iterations?$timeframe=current&api-version=7.1-preview.1`;
     const res = await fetch(url, {
       headers: { Authorization: buildAuthHeader(pat) },
